@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>MapLibre + map.json + múltiples especies (navegación con botones)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    #app { display: grid; grid-template-columns: 1fr 460px; height: 100%; }
+    #map { width: 100%; height: 100%; }
+
+    .sidebar { border-left: 1px solid rgba(0,0,0,.08); background: #fff; display: flex; flex-direction: column; min-height: 0; }
+    .sidebar header { padding: 10px 12px; border-bottom: 1px solid rgba(0,0,0,.08);
+      display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+    .sidebar header h2 { grid-column: 1 / -1; font-size: 14px; margin: 0 0 6px; font-weight: 600; }
+    .controls { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+    .controls select, .controls button, .controls label {
+      padding: 6px 8px; border-radius: 8px; border: 1px solid #ddd; background: #fafafa; font-size: 13px; cursor: pointer;
+    }
+    .controls select { cursor: default; }
+    .nav { display:flex; gap:6px; align-items:center; }
+    .btn { cursor: pointer; }
+    .btn:hover { background: #f0f0f0; }
+    .btn[disabled] { opacity: .6; cursor: not-allowed; }
+    .btn-danger { border-color: #f2c2c2; background: #ffecec; }
+    .btn-danger:hover { background: #ffdede; }
+
+    .hint { font-size: 12px; color: #555; padding: 8px 12px; border-bottom: 1px dashed #e5e5e5; }
+    .section-title { padding: 8px 12px; font-size: 13px; font-weight: 600; color: #222; border-top: 1px solid #eee; background: #fafafa; }
+    .list { overflow: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+    .item { border: 1px solid #e5e5e5; border-radius: 10px; padding: 8px; display: grid; gap: 8px; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.04); }
+    .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .row .coord { font-size: 12px; color: #333; white-space: nowrap; }
+    .tag { font-size: 11px; padding: 2px 6px; border-radius: 999px; background: #eef; color: #223; border: 1px solid #ccd; }
+
+    .toast { position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,.85); color: #fff; padding: 8px 12px; border-radius: 8px;
+      font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 10; }
+    .toast.show { opacity: 1; }
+
+    .floating { position:absolute; bottom:12px; right:472px; background:#fff; padding:6px 8px; border-radius:6px;
+      font-size:13px; box-shadow: 0 2px 8px rgba(0,0,0,.1); min-width: 220px; text-align: right; }
+
+    @media (max-width: 1040px) {
+      #app { grid-template-columns: 1fr; }
+      .sidebar { position: absolute; inset: auto 0 0 0; height: 55%; border-left: none; border-top: 1px solid #eee; }
+      .floating { right: 12px; }
+    }
+
+    input[type="file"] { display: none; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div style="position:relative">
+      <div id="map"></div>
+      <div id="toast" class="toast"></div>
+      <div id="floatingCoords" class="floating">lat: —, lon: —</div>
+    </div>
+
+    <aside class="sidebar">
+      <header>
+        <h2>Especies y coordenadas</h2>
+        <div class="controls">
+          <div class="nav">
+            <button id="prevSpeciesBtn" class="btn" title="Anterior especie (←)">◀︎</button>
+            <select id="speciesSelect" title="Especie actual"></select>
+            <button id="nextSpeciesBtn" class="btn" title="Siguiente especie (→)">▶︎</button>
+          </div>
+          <div style="display:flex; gap:8px;">
+            <button id="newSpeciesBtn" class="btn" title="Crear nueva especie">Nueva especie</button>
+            <label for="csvInput" class="btn" title="Cargar CSV con nombres de especies">Cargar CSV de especies</label>
+            <input id="csvInput" type="file" accept=".csv,text/csv,text/plain" />
+          </div>
+          <div class="subcontrols">
+            <button id="copyAllCurrent" class="btn" title="Copiar todas las filas (CSV) de la especie actual">Copiar especie (CSV)</button>
+            <button id="exportCsvCurrent" class="btn" title="Descargar CSV de la especie actual">Exportar especie</button>
+            <button id="clearSpecies" class="btn btn-danger" title="Eliminar todas las filas de la especie actual">Limpiar especie</button>
+          </div>
+        </div>
+      </header>
+
+      <div class="hint">
+        Navega con <b>◀︎/▶︎</b> o flechas del teclado. La <b>especie actual</b> recibe los clics y solo sus marcadores se muestran.
+      </div>
+
+      <div class="section-title">Lista de la especie actual</div>
+      <div id="listCurrent" class="list"></div>
+
+      <div class="section-title" style="display:flex; align-items:center; justify-content:space-between;">
+        <span>Lista general (todas las especies)</span>
+        <span style="display:flex; gap:8px;">
+          <button id="copyAllGlobal" class="btn" title="Copiar todos los puntos (CSV) de todas las especies">Copiar todas (CSV)</button>
+          <button id="exportCsvGlobal" class="btn" title="Descargar CSV de todas las especies">Exportar todas</button>
+        </span>
+      </div>
+      <div id="listGlobal" class="list"></div>
+    </aside>
+  </div>
+
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script>
+    // =========================
+    // 1) Mapa
+    // =========================
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: './map.json',
+      center: [-79.5314722, 9.0244167], // [lon, lat]
+      zoom: 16
+    });
+    map.on('load', () => {
+      map.getCanvas().style.cursor = 'crosshair';
+      new maplibregl.Marker().setLngLat([-79.5314722, 9.0244167]).addTo(map);
+    });
+
+    // =========================
+    // Utilidades UI
+    // =========================
+    const toastEl = document.getElementById('toast');
+    const floatingCoords = document.getElementById('floatingCoords');
+
+    const listCurrentEl = document.getElementById('listCurrent');
+    const listGlobalEl  = document.getElementById('listGlobal');
+
+    const speciesSelect = document.getElementById('speciesSelect');
+    const prevSpeciesBtn = document.getElementById('prevSpeciesBtn');
+    const nextSpeciesBtn = document.getElementById('nextSpeciesBtn');
+
+    const newSpeciesBtn = document.getElementById('newSpeciesBtn');
+    const csvInput = document.getElementById('csvInput');
+
+    const copyAllCurrentBtn = document.getElementById('copyAllCurrent');
+    const exportCsvCurrentBtn = document.getElementById('exportCsvCurrent');
+    const clearSpeciesBtn = document.getElementById('clearSpecies');
+
+    const copyAllGlobalBtn = document.getElementById('copyAllGlobal');
+    const exportCsvGlobalBtn = document.getElementById('exportCsvGlobal');
+
+    function showToast(text) {
+      toastEl.textContent = text;
+      toastEl.classList.add('show');
+      clearTimeout(showToast._t);
+      showToast._t = setTimeout(() => toastEl.classList.remove('show'), 1500);
+    }
+    async function copyToClipboard(text) {
+      try { await navigator.clipboard.writeText(text); showToast('Copiado'); }
+      catch {
+        const tmp = document.createElement('textarea');
+        tmp.value = text; document.body.appendChild(tmp); tmp.select();
+        document.execCommand('copy'); document.body.removeChild(tmp);
+        showToast('Copiado (fallback)');
+      }
+    }
+    function escapeCsv(value) {
+      const s = String(value ?? '');
+      return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    }
+    function slugify(s) {
+      return String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    }
+    function downloadCsv(filename, content) {
+      const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a); URL.revokeObjectURL(url);
+    }
+
+    // =========================
+    // 2) Modelo de datos
+    // =========================
+    let speciesSeq = 0;
+    let pointSeqGlobal = 0;
+    const colorPalette = ['#2b8a3e', '#1c7ed6', '#d9480f', '#862e9c', '#5c940d', '#e8590c', '#0ca678', '#1971c2', '#c2255c'];
+    const datasets = new Map(); // id -> { id, name, color, items: [ {pid, lat, lon, marker, createdAt} ] }
+    let currentSpeciesId = null;
+
+    function createSpecies(name) {
+      const norm = normalizeName(name);
+      for (const ds of datasets.values()) {
+        if (normalizeName(ds.name) === norm) return ds; // evitar duplicado por nombre
+      }
+      const id = ++speciesSeq;
+      const color = colorPalette[(id - 1) % colorPalette.length];
+      const dataset = { id, name: (name || '').trim() || `Especie ${id}`, color, items: [] };
+      datasets.set(id, dataset);
+      return dataset;
+    }
+    function normalizeName(s) {
+      return String(s || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    }
+
+    function getSpeciesIdsArray() { return Array.from(datasets.keys()); }
+    function updateNavButtonsState() {
+      const count = datasets.size;
+      const disable = count <= 1;
+      prevSpeciesBtn.disabled = disable;
+      nextSpeciesBtn.disabled = disable;
+    }
+
+    function renderSpeciesSelect() {
+      const cur = currentSpeciesId;
+      speciesSelect.innerHTML = '';
+      for (const ds of datasets.values()) {
+        const opt = document.createElement('option');
+        opt.value = String(ds.id);
+        opt.textContent = ds.name;
+        speciesSelect.appendChild(opt);
+      }
+      if (cur && datasets.has(cur)) speciesSelect.value = String(cur);
+      updateNavButtonsState();
+    }
+
+    function setCurrentSpecies(id) {
+      currentSpeciesId = id;
+      renderSpeciesSelect();
+      speciesSelect.value = String(id);
+      renderCurrentList();
+      renderGlobalList();
+      showOnlySpeciesMarkers(id);
+    }
+
+    // Mostrar solo marcadores de la especie activa
+    function showOnlySpeciesMarkers(activeId) {
+      for (const ds of datasets.values()) {
+        const visible = ds.id === activeId;
+        ds.items.forEach(it => {
+          const el = it.marker.getElement();
+          el.style.display = visible ? '' : 'none';
+        });
+      }
+    }
+
+    // =========================
+    // 3) Puntos
+    // =========================
+    function addPointToCurrent(lat, lon) {
+      const ds = datasets.get(currentSpeciesId);
+      if (!ds) return;
+      const pid = ++pointSeqGlobal;
+      const marker = new maplibregl.Marker({ color: ds.color }).setLngLat([lon, lat]).addTo(map);
+      marker.getElement().style.display = ''; // visible para la activa
+      ds.items.unshift({ pid, lat, lon, marker, createdAt: Date.now() });
+      return pid;
+    }
+    function deletePoint(speciesId, pid) {
+      const ds = datasets.get(speciesId);
+      if (!ds) return;
+      const idx = ds.items.findIndex(it => it.pid === pid);
+      if (idx >= 0) { ds.items[idx].marker.remove(); ds.items.splice(idx, 1); }
+    }
+
+    // =========================
+    // 4) Render de listas
+    // =========================
+    function renderCurrentList() {
+      listCurrentEl.innerHTML = '';
+      const ds = datasets.get(currentSpeciesId);
+      if (!ds) return;
+
+      ds.items.forEach((item) => {
+        const card = document.createElement('div');
+        card.className = 'item';
+        card.dataset.pid = String(item.pid);
+
+        const row1 = document.createElement('div');
+        row1.className = 'row';
+        const tag = document.createElement('span'); tag.className = 'tag';
+        tag.textContent = ds.name; tag.style.borderColor = ds.color; tag.style.background = ds.color + '22';
+        const coord = document.createElement('div'); coord.className = 'coord';
+        coord.textContent = `lat: ${item.lat.toFixed(6)}, lon: ${item.lon.toFixed(6)}`;
+        row1.appendChild(tag); row1.appendChild(coord);
+
+        const row2 = document.createElement('div');
+        row2.className = 'row';
+        const btnCopy = document.createElement('button'); btnCopy.className = 'btn'; btnCopy.textContent = 'Copiar (CSV)';
+        const btnDel = document.createElement('button'); btnDel.className = 'btn btn-danger'; btnDel.textContent = 'Eliminar';
+        row2.appendChild(btnCopy); row2.appendChild(btnDel);
+
+        card.appendChild(row1); card.appendChild(row2);
+        listCurrentEl.appendChild(card);
+
+        btnCopy.addEventListener('click', () => {
+          const idCsv = getVisualIndex(listCurrentEl, card);
+          copyToClipboard(csvLineSpecies(idCsv, ds.name, item.lat, item.lon));
+        });
+        btnDel.addEventListener('click', () => {
+          deletePoint(ds.id, item.pid);
+          renderCurrentList(); renderGlobalList();
+        });
+      });
+    }
+
+    function renderGlobalList() {
+      listGlobalEl.innerHTML = '';
+      const all = [];
+      for (const ds of datasets.values()) {
+        ds.items.forEach((it) => all.push({ speciesId: ds.id, speciesName: ds.name, color: ds.color, item: it }));
+      }
+      all.sort((a, b) => b.item.createdAt - a.item.createdAt);
+
+      all.forEach(({ speciesId, speciesName, color, item }) => {
+        const card = document.createElement('div');
+        card.className = 'item';
+        card.dataset.pid = String(item.pid);
+        card.dataset.sid = String(speciesId);
+
+        const row1 = document.createElement('div'); row1.className = 'row';
+        const tag = document.createElement('span'); tag.className = 'tag';
+        tag.textContent = speciesName; tag.style.borderColor = color; tag.style.background = color + '22';
+        const coord = document.createElement('div'); coord.className = 'coord';
+        coord.textContent = `lat: ${item.lat.toFixed(6)}, lon: ${item.lon.toFixed(6)}`;
+        row1.appendChild(tag); row1.appendChild(coord);
+
+        const row2 = document.createElement('div'); row2.className = 'row';
+        const btnCopy = document.createElement('button'); btnCopy.className = 'btn'; btnCopy.textContent = 'Copiar (CSV)';
+        const btnDel = document.createElement('button'); btnDel.className = 'btn btn-danger'; btnDel.textContent = 'Eliminar';
+        row2.appendChild(btnCopy); row2.appendChild(btnDel);
+
+        card.appendChild(row1); card.appendChild(row2);
+        listGlobalEl.appendChild(card);
+
+        btnCopy.addEventListener('click', () => {
+          const idCsv = getVisualIndexInSpecies(speciesId, item.pid);
+          copyToClipboard(csvLineSpecies(idCsv, speciesName, item.lat, item.lon));
+        });
+        btnDel.addEventListener('click', () => {
+          deletePoint(speciesId, item.pid);
+          renderCurrentList(); renderGlobalList();
+        });
+      });
+    }
+
+    // Helpers de índice visual (1..N)
+    function getVisualIndex(containerEl, cardEl) {
+      const cards = Array.from(containerEl.querySelectorAll('.item'));
+      const idx = cards.indexOf(cardEl);
+      return idx >= 0 ? (idx + 1) : 0;
+    }
+    function getVisualIndexInSpecies(speciesId, pid) {
+      const ds = datasets.get(speciesId);
+      if (!ds) return 0;
+      const idx = ds.items.findIndex(it => it.pid === pid);
+      return idx >= 0 ? (idx + 1) : 0;
+    }
+
+    // =========================
+    // 5) CSV
+    // =========================
+    function csvLineSpecies(id, speciesName, lat, lon) {
+      return `${id},${escapeCsv(speciesName)},${lat.toFixed(6)},${lon.toFixed(6)}`;
+    }
+    function buildCsvForSpecies(speciesId) {
+      const ds = datasets.get(speciesId);
+      if (!ds) return '';
+      const header = 'ID,Nombre de ave,Latitud,Longitud';
+      const lines = ds.items.map((it, i) => csvLineSpecies(i + 1, ds.name, it.lat, it.lon));
+      return [header, ...lines].join('\n');
+    }
+    function buildCsvForAllSpecies() {
+      const header = 'Nombre de ave,ID,Latitud,Longitud';
+      const parts = [header];
+      for (const ds of datasets.values()) {
+        ds.items.forEach((it, i) => {
+          const idCsv = i + 1;
+          parts.push(`${escapeCsv(ds.name)},${idCsv},${it.lat.toFixed(6)},${it.lon.toFixed(6)}`);
+        });
+      }
+      return parts.join('\n');
+    }
+
+    // =========================
+    // 6) CSV de especies (nombres)
+    // =========================
+    csvInput.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const names = parseSpeciesNamesCsv(text);
+        if (names.length === 0) { showToast('No se encontraron nombres en el CSV'); csvInput.value = ''; return; }
+        let created = 0;
+        names.forEach(n => { const ds = createSpecies(n); if (ds) created++; });
+        renderSpeciesSelect();
+        if (created > 0) {
+          const lastAdded = Array.from(datasets.values()).pop();
+          if (lastAdded) setCurrentSpecies(lastAdded.id);
+        }
+        showToast(`Cargadas ${created} especies`);
+      } catch (err) {
+        console.error(err); showToast('Error leyendo el CSV');
+      } finally {
+        csvInput.value = '';
+      }
+    });
+    function parseSpeciesNamesCsv(text) {
+      if (!text) return [];
+      if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+      const lines = text.split(/\r?\n/);
+      const names = [];
+      for (const raw of lines) {
+        if (!raw) continue;
+        let first = raw;
+        const m = raw.match(/^\s*"([^"]*(?:""[^"]*)*)"|^\s*([^,]+)/);
+        if (m) first = (m[1] ?? m[2] ?? '').replace(/""/g, '"');
+        first = first.trim();
+        if (!first) continue;
+        names.push(first);
+      }
+      const seen = new Set(), out = [];
+      for (const n of names) { const key = normalizeName(n); if (seen.has(key)) continue; seen.add(key); out.push(n); }
+      return out;
+    }
+
+    // =========================
+    // 7) Navegación de especies (botones/teclado)
+    // =========================
+    function goToOffset(delta) {
+      const ids = getSpeciesIdsArray();
+      if (!ids.length) return;
+      let idx = ids.indexOf(currentSpeciesId);
+      if (idx === -1) idx = 0;
+      const nextIdx = (idx + delta + ids.length) % ids.length;
+      setCurrentSpecies(ids[nextIdx]);
+    }
+    prevSpeciesBtn.addEventListener('click', () => goToOffset(-1));
+    nextSpeciesBtn.addEventListener('click', () => goToOffset(+1));
+    // Atajos: flechas izquierda/derecha
+    window.addEventListener('keydown', (e) => {
+      if (e.target && ['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
+      if (e.key === 'ArrowLeft') { goToOffset(-1); }
+      if (e.key === 'ArrowRight') { goToOffset(+1); }
+    });
+
+    // =========================
+    // 8) Interacciones base
+    // =========================
+    const first = createSpecies('Especie 1');
+    renderSpeciesSelect();
+    setCurrentSpecies(first.id);
+
+    newSpeciesBtn.addEventListener('click', () => {
+      const name = prompt('Nombre de la nueva especie:', '');
+      const ds = createSpecies(name || `Especie ${speciesSeq}`);
+      renderSpeciesSelect();
+      setCurrentSpecies(ds.id);
+      showToast(`Especie creada: ${ds.name}`);
+    });
+
+    speciesSelect.addEventListener('change', () => {
+      const id = Number(speciesSelect.value);
+      if (datasets.has(id)) setCurrentSpecies(id);
+    });
+
+    map.on('click', (e) => {
+      const { lng, lat } = e.lngLat;
+      floatingCoords.textContent = `lat: ${lat.toFixed(6)}, lon: ${lng.toFixed(6)}`;
+      const pid = addPointToCurrent(lat, lng);
+      renderCurrentList();
+      renderGlobalList();
+      const ds = datasets.get(currentSpeciesId);
+      showToast(`Punto agregado (#${pid}) a "${ds.name}"`);
+    });
+
+    copyAllCurrentBtn.addEventListener('click', () => {
+      const csv = buildCsvForSpecies(currentSpeciesId);
+      if (!csv.trim()) { showToast('No hay filas para copiar'); return; }
+      copyToClipboard(csv);
+    });
+    exportCsvCurrentBtn.addEventListener('click', () => {
+      const ds = datasets.get(currentSpeciesId);
+      const csv = buildCsvForSpecies(currentSpeciesId);
+      if (!csv.trim()) { showToast('No hay filas para exportar'); return; }
+      downloadCsv(`coords-${slugify(ds.name)}.csv`, csv);
+      showToast(`Descargado: coords-${slugify(ds.name)}.csv`);
+    });
+    clearSpeciesBtn.addEventListener('click', () => {
+      const ds = datasets.get(currentSpeciesId);
+      if (!ds) return;
+      ds.items.forEach(it => it.marker.remove());
+      ds.items = [];
+      renderCurrentList(); renderGlobalList();
+      showToast(`Se vaciaron los puntos de "${ds.name}"`);
+    });
+    copyAllGlobalBtn.addEventListener('click', () => {
+      const csv = buildCsvForAllSpecies();
+      if (!csv.trim() || csv.split('\n').length <= 1) { showToast('No hay datos para copiar'); return; }
+      copyToClipboard(csv);
+    });
+    exportCsvGlobalBtn.addEventListener('click', () => {
+      const csv = buildCsvForAllSpecies();
+      if (!csv.trim() || csv.split('\n').length <= 1) { showToast('No hay datos para exportar'); return; }
+      downloadCsv('coords-todas-las-especies.csv', csv);
+      showToast('Descargado: coords-todas-las-especies.csv');
+    });
+  </script>
+</body>
+</html>
